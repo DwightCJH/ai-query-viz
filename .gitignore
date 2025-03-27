@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# SQLite database file
+*.db
+
+# Temporary files
+*.log
+*.tmp
+
+# VSCode settings
+.vscode/
+
+# macOS files
+.DS_Store
