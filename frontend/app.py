@@ -9,17 +9,17 @@ st.set_page_config(page_title="Data Query Viz", layout="wide")
 
 # Title and description
 st.title("Data Query Viz")
-st.markdown("Upload a CSV or Excel file, ask questions in natural language, and visualize your data using AI.")
+st.markdown("Upload a CSV or Excel file here!")
 
 # Check if the backend is running
 try:
     response = requests.get("http://localhost:5000/api/health")
     if response.status_code == 200:
-        st.success("Backend is running: " + response.json()['status'])
+        st.success(response.json()['status'])
     else:
         st.error("Backend is not responding.")
 except requests.ConnectionError:
-    st.error("Could not connect to the backend. Make sure the Flask server is running.")
+    st.error("Could not connect to the backend")
     st.stop()
 
 # Initialize session state for storing the dataframe and prompt history

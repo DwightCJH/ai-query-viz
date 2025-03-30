@@ -5,7 +5,6 @@ import os
 load_dotenv()
 app = Flask(__name__)
 
-# Load API key (for future use with PandasAI and LIDA)
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
     print("API key not found")
