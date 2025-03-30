@@ -3,137 +3,191 @@ import requests
 import pandas as pd
 import plotly.express as px
 import json
+import openpyxl
+import os
 
-# Streamlit page configuration
-st.set_page_config(page_title="Data Query Viz", layout="wide")
 
-# Title and description
-st.title("Data Query Viz")
-st.markdown("Upload a CSV or Excel file here!")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000") 
+QUERY_ENDPOINT = f"{BACKEND_URL}/api/query"
 
-# Check if the backend is running
-try:
-    response = requests.get("http://localhost:5000/api/health")
-    if response.status_code == 200:
-        st.success(response.json()['status'])
-    else:
-        st.error("Backend is not responding.")
-except requests.ConnectionError:
-    st.error("Could not connect to the backend")
-    st.stop()
+st.set_page_config(layout="wide")
+st.title("🧿 CSV-ision 🧿") 
 
-# Initialize session state for storing the dataframe and prompt history
-if 'df' not in st.session_state:
-    st.session_state.df = None
-if 'prompt_history' not in st.session_state:
-    st.session_state.prompt_history = []
+#initialise session state to store dataframes and prevent reprocessing
+if 'dataframes' not in st.session_state:
+    st.session_state.dataframes = {}  #dictionary to store {display_name: df}
+if 'display_names' not in st.session_state:
+    st.session_state.display_names = []
+if 'last_query' not in st.session_state:
+    st.session_state.last_query = {"prompt": "", "response": None, "error": None}
 
-# Layout: Two columns (main content and prompt history sidebar)
-col1, col2 = st.columns([3, 1])
+uploaded_files = st.file_uploader(
+    "Upload your CSV or Excel files here",
+    type=["csv", "xls", "xlsx"], #security1: restrict file upload types
+    accept_multiple_files=True, #allow multiple files
+    help="Upload one or more files. Each sheet in an Excel file will be treated as a separate dataset."
+) 
 
-# Main content (file upload, query input, results)
-with col1:
-    # File upload section
-    st.subheader("Upload Your Data")
-    uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"])
-    
-    if uploaded_file is not None:
-        # Send the file to the Flask backend for processing
-        files = {"file": (uploaded_file.name, uploaded_file, uploaded_file.type)}
+if uploaded_files:
+    new_files_processed = False
+    for uploaded_file in uploaded_files:
         try:
-            response = requests.post("http://localhost:5000/api/upload", files=files)
-            if response.status_code == 200:
-                st.success("File uploaded successfully!")
-                # Store the dataframe in session state (for display purposes)
-                if uploaded_file.name.endswith('.csv'):
-                    st.session_state.df = pd.read_csv(uploaded_file)
-                else:
-                    st.session_state.df = pd.read_excel(uploaded_file)
-                # Display top 5 rows
-                st.subheader("Top 5 Rows of Your Data")
-                st.dataframe(st.session_state.df.head())
-            else:
-                st.error(f"Error uploading file: {response.json().get('error', 'Unknown error')}")
-        except requests.ConnectionError:
-            st.error("Could not connect to the backend for file upload.")
+            #create a unique preliminary name to check if already processed
+            file_identifier = f"{uploaded_file.name}_{uploaded_file.size}"
 
-    # Query section (only show if a file has been uploaded)
-    if st.session_state.df is not None:
-        st.subheader("Ask a Question")
-        query = st.text_input("Enter your question (e.g., 'What’s the average age?' or 'Plot a histogram of ages')")
-        if st.button("Submit Query"):
-            if query:
-                # Send the query to the Flask backend
-                try:
-                    response = requests.post("http://localhost:5000/api/query", json={"prompt": query})
-                    if response.status_code == 200:
-                        result = response.json()
-                        # Store the prompt and response in session state
-                        prompt_id = result.get("prompt_id")
-                        st.session_state.prompt_history.append({
-                            "prompt_id": prompt_id,
-                            "prompt": query,
-                            "response": result.get("response"),
-                            "visualisation": result.get("visualisation")
-                        })
-                        # Display the result
-                        if result.get("response"):
-                            st.subheader("Response")
-                            st.write(result["response"])
-                        if result.get("visualisation"):
-                            st.subheader("Visualization")
-                            # Parse the Plotly figure JSON and display it
-                            fig = px.scatter()  # Placeholder; replace with actual Plotly figure
-                            if result["visualisation"]:
-                                fig = px.from_json(result["visualisation"])
-                            st.plotly_chart(fig)
-                        # Feedback buttons
-                        st.subheader("Was this response helpful?")
-                        col_feedback1, col_feedback2 = st.columns(2)
-                        with col_feedback1:
-                            if st.button("👍", key=f"thumbs_up_{prompt_id}"):
-                                requests.post("http://localhost:5000/api/feedback", 
-                                            json={"prompt_id": prompt_id, "rating": "positive"})
-                                st.success("Feedback submitted!")
-                        with col_feedback2:
-                            if st.button("👎", key=f"thumbs_down_{prompt_id}"):
-                                requests.post("http://localhost:5000/api/feedback", 
-                                            json={"prompt_id": prompt_id, "rating": "negative"})
-                                st.success("Feedback submitted!")
-                    else:
-                        st.error(f"Error processing query: {response.json().get('error', 'Unknown error')}")
-                except requests.ConnectionError:
-                    st.error("Could not connect to the backend for query processing.")
-            else:
-                st.warning("Please enter a query.")
+            file_type = uploaded_file.name.split(".")[-1].lower()
 
-# Prompt history sidebar
-with col2:
-    st.subheader("Prompt History")
-    # Fetch prompt history from the backend
-    try:
-        history_response = requests.get("http://localhost:5000/api/history")
-        if history_response.status_code == 200:
-            history = history_response.json().get("history", [])
-            # Update session state with the latest history
-            st.session_state.prompt_history = history
+            if file_type == "csv":
+                #check if this specific CSV file has already been processed
+                display_name = uploaded_file.name
+                if display_name not in st.session_state.display_names:
+                    df = pd.read_csv(uploaded_file)
+                    st.session_state.dataframes[display_name] = df
+                    st.session_state.display_names.append(display_name)
+                    new_files_processed = True
+                    st.toast(f"Processed CSV: {display_name}", icon="📄")
+
+            elif file_type in ["xls", "xlsx"]:
+                excel_file = pd.ExcelFile(uploaded_file)
+                # Check if sheets from this specific Excel file have already been processed
+                for sheet_name in excel_file.sheet_names:
+                    display_name = f"{uploaded_file.name} - {sheet_name}"
+                    if display_name not in st.session_state.display_names:
+                        df = excel_file.parse(sheet_name)
+                        if df.shape[0] < 250:
+                             st.warning(f"Sheet '{sheet_name}' in file '{uploaded_file.name}' has less than 250 rows ({df.shape[0]}). Consider using a larger dataset.", icon="⚠️")
+                        st.session_state.dataframes[display_name] = df
+                        st.session_state.display_names.append(display_name)
+                        new_files_processed = True
+                        st.toast(f"Processed Excel Sheet: {display_name}", icon="📊")
+            else:
+                #should not happen due to 'type' restriction, but good practice
+                st.error(f"Unsupported File Type: {uploaded_file.name}")
+
+        except Exception as e:
+            st.error(f"Error reading file '{uploaded_file.name}': {e}")
+
+    if new_files_processed:
+        st.success("File processing complete!")
+        st.rerun()
+
+if not st.session_state.display_names:
+    st.info("Upload files using the uploader above to get started.")
+else:
+    col1, col2 = st.columns([0.4, 0.6]) # Create columns for layout
+
+    with col1: # Left column for selection and preview
+        st.header("Explore Uploaded Data")
+        selected_display_name = st.selectbox(
+            "Select dataset to view:",
+            options=st.session_state.display_names,
+            key="dataset_selector",
+            index=st.session_state.display_names.index(st.session_state.get('last_selected_dataset', st.session_state.display_names[0])) # Remember last selection
+        )
+        st.session_state['last_selected_dataset'] = selected_display_name # Store selection
+
+        if selected_display_name and selected_display_name in st.session_state.dataframes:
+            selected_df = st.session_state.dataframes[selected_display_name]
+            st.subheader(f"Preview: {selected_display_name}")
+
+            max_rows = len(selected_df)
+            default_rows = min(5, max_rows)
+
+            n_rows = st.number_input(
+                f"Rows to display (max {max_rows})",
+                min_value=1,
+                max_value=max_rows if max_rows > 0 else 1,
+                value=default_rows if max_rows > 0 else 1,
+                step=1,
+                key=f"n_rows_input_{selected_display_name}" # Unique key per dataframe
+            )
+
+            if max_rows > 0:
+                st.dataframe(selected_df.head(n_rows))
+            else:
+                st.warning("The selected dataset is empty.")
         else:
-            st.error("Could not fetch prompt history.")
-    except requests.ConnectionError:
-        st.error("Could not connect to the backend for prompt history.")
-    
-    # Display prompt history
-    if st.session_state.prompt_history:
-        for entry in st.session_state.prompt_history:
-            with st.expander(f"Prompt: {entry['prompt']}"):
-                if entry.get("response"):
-                    st.write("**Response:**")
-                    st.write(entry["response"])
-                if entry.get("visualisation"):
-                    st.write("**Visualization:**")
-                    fig = px.scatter()  # Placeholder; replace with actual Plotly figure
-                    if entry["visualisation"]:
-                        fig = px.from_json(entry["visualisation"])
-                    st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.write("No prompts yet.")
+             st.warning("Please select a valid dataset from the list.")
+
+
+    with col2: # Right column for Querying
+        st.header("Ask Questions")
+        if selected_display_name and selected_display_name in st.session_state.dataframes:
+            prompt = st.text_area(
+                f"Ask about '{selected_display_name}':",
+                key=f"prompt_input_{selected_display_name}",
+                height=100,
+                placeholder="e.g., 'Show me a bar chart of survivors by class' or 'What is the average age?'"
+            )
+
+            submit_button = st.button("✨ Get Answer", key=f"submit_{selected_display_name}")
+
+            if submit_button and prompt:
+                # Ensure dataframe is not empty before sending
+                if selected_df.empty:
+                    st.error("Cannot query an empty dataset.")
+                else:
+                    with st.spinner("Thinking... 🤔"):
+                        try:
+                            # Convert dataframe to JSON records format
+                            data_json = selected_df.to_json(orient='records')
+
+                            # Prepare payload for backend
+                            payload = {
+                                "prompt": prompt,
+                                "data_json": data_json,
+                                "dataset_name": selected_display_name # Send name for context/history
+                            }
+
+                            # Send request to backend
+                            response = requests.post(QUERY_ENDPOINT, json=payload, timeout=120) # Increased timeout for potentially long AI calls
+                            response.raise_for_status()  
+
+                            response_data = response.json()
+                            st.session_state.last_query = {
+                                "prompt": prompt,
+                                "response": response_data,
+                                "error": None
+                            }
+
+                        except requests.exceptions.Timeout:
+                            st.error(f"🚨 Request timed out after 120 seconds. The query might be too complex or the backend is slow.", icon="⏳")
+                            st.session_state.last_query["error"] = "Request Timed Out"
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"🚨 Error communicating with backend: {e}", icon="🔥")
+                            st.session_state.last_query["error"] = str(e)
+                        except Exception as e:
+                            st.error(f"🚨 An unexpected error occurred: {e}", icon="💥")
+                            st.session_state.last_query["error"] = str(e)
+
+            # --- Display results from session state ---
+            if st.session_state.last_query.get("error"):
+                st.error(f"Previous query failed: {st.session_state.last_query['error']}")
+            elif st.session_state.last_query.get("response"):
+                st.markdown("---")
+                st.subheader("💡 Answer:")
+                response_content = st.session_state.last_query["response"]
+                response_type = response_content.get("response_type")
+                content = response_content.get("content")
+
+                if response_type == "text":
+                    st.markdown(content)
+                elif response_type == "plot":
+                    try:
+                        fig_dict = json.loads(content) 
+                        fig = go.Figure(fig_dict) 
+                        st.plotly_chart(fig, use_container_width=True)
+                    except json.JSONDecodeError:
+                         st.error("🚨 Received plot data is not valid JSON.")
+                         st.text(content) 
+                    except Exception as e:
+                        st.error(f"🚨 Error displaying plot: {e}")
+                        st.text(content) 
+                elif response_type == "error":
+                    st.error(f"Backend Error: {content}")
+                else:
+                    st.warning("Received an unknown response type from backend.")
+                    st.json(response_content) 
+
+        else:
+            st.info("Select a dataset from the left to start asking questions.")
