@@ -14,6 +14,7 @@ FEEDBACK_ENDPOINT = f"{BACKEND_URL}/api/feedback"
 
 st.set_page_config(layout="wide")
 st.title("🧿 CSV-ision 🧿")
+st.markdown("[github.com/DwightCJH](https://github.com/DwightCJH)", unsafe_allow_html=True)
 
 #initialise session state to store dataframes and prevent reprocessing
 if 'dataframes' not in st.session_state:
