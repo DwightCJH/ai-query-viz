@@ -1,25 +1,43 @@
-# backend/app.py
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g 
 from dotenv import load_dotenv
 import os
 import json
 import pandas as pd
-import io 
-import contextlib 
+import io
+import contextlib
+from datetime import datetime 
+import sqlite3 
 from lida import Manager, TextGenerationConfig, llm
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.io as pio
 from pandasai import Agent
-from pandasai.llm.openai import OpenAI as PandasAiOpenAI 
+from pandasai.llm.openai import OpenAI as PandasAiOpenAI
 
 load_dotenv()
 app = Flask(__name__)
 
+# --- Database Configuration ---
+DATABASE = 'history.db'
+
+def get_db():
+    #opens a new database connection if there is none yet for the current application context.
+    if 'db' not in g:
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+@app.teardown_appcontext
+def close_connection(exception):
+    #closes the database connection at the end of the request
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+# --- LLM Configuration ---
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
-    print("Warning: OPENAI_API_KEY environment variable not set.")
-    # raise ValueError("OPENAI_API_KEY environment variable not set.")
+    raise ValueError("OPENAI_API_KEY environment variable not set.")
 
 #initialize llm
 try:
@@ -56,12 +74,20 @@ def home():
 def health_check():
     #check if llm was initialized successfully
     llm_status = "initialized" if text_gen_lida and llm_pandasai else "initialization_failed"
-    return jsonify({"status": "Backend is running", "llm_status": llm_status})
+    db_status = "connected"
+    try:
+        get_db().cursor() # Try getting a cursor
+    except Exception as e:
+        db_status = f"connection_failed: {e}"
+    return jsonify({"status": "Backend is running", "llm_status": llm_status, "db_status": db_status})
 
 @app.route('/api/query', methods=['POST'])
 def query():
     if not text_gen_lida or not llm_pandasai:
          return jsonify({"response_type": "error", "content": "LLM not initialized. Check API key and backend logs."}), 500
+
+    history_id = None #initialize history_id
+    response_payload = {} #to store the final response content and type
 
     try:
         payload = request.get_json()
@@ -91,7 +117,7 @@ def query():
             try:
                 lida = Manager(text_gen=text_gen_lida)
                 summary = lida.summarize(df, summary_method="llm")
-                textgen_config = TextGenerationConfig(n=1, temperature=0.2, use_cache=True, model="gpt-4o-mini") 
+                textgen_config = TextGenerationConfig(n=1, temperature=0.2, use_cache=True, model="gpt-4o-mini")
 
                 charts = lida.visualize(
                     summary=summary,
@@ -119,7 +145,7 @@ def query():
                         if fig and isinstance(fig, (go.Figure)):
                             chart_json = pio.to_json(fig)
                             lida_success = True #LIDA successful
-                            return jsonify({"response_type": "plot", "content": chart_json}), 200
+                            response_payload = {"response_type": "plot", "content": chart_json}
                         else:
                              print("LIDA code executed but did not produce a recognized Plotly figure.")
 
@@ -135,25 +161,103 @@ def query():
                 response_pandasai = agent.chat(prompt)
 
                 if isinstance(response_pandasai, str):
-                    return jsonify({"response_type": "text", "content": response_pandasai}), 200
+                    response_payload = {"response_type": "text", "content": response_pandasai}
                 elif isinstance(response_pandasai, (pd.DataFrame, pd.Series)):
                      response_str = response_pandasai.to_markdown()
-                     return jsonify({"response_type": "text", "content": response_str}), 200
+                     response_payload = {"response_type": "text", "content": response_str}
                 else:
-                    return jsonify({"response_type": "text", "content": str(response_pandasai)}), 200
+                    response_payload = {"response_type": "text", "content": str(response_pandasai)}
 
             except Exception as pandasai_error:
                  print(f"Error during PandasAI processing: {pandasai_error}")
-                 #if visual intent failed with LIDA and text intent failed with PandasAI
                  error_msg = f"LIDA failed and PandasAI fallback also failed: {pandasai_error}" if visual_intent else f"PandasAI failed: {pandasai_error}"
-                 return jsonify({"response_type": "error", "content": error_msg}), 500
+                 response_payload = {"response_type": "error", "content": error_msg}
+
+        # --- Save to History Database ---
+        if response_payload: 
+            try:
+                db = get_db()
+                cursor = db.cursor()
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                response_type = response_payload.get("response_type", "unknown")
+
+                cursor.execute('''
+                    INSERT INTO prompt_history (prompt, dataset_name, response_type, timestamp)
+                    VALUES (?, ?, ?, ?)
+                ''', (prompt, dataset_name, response_type, timestamp))
+                db.commit()
+                history_id = cursor.lastrowid #get the ID of the inserted row
+            except Exception as db_error:
+                print(f"Database Error saving history: {db_error}")
+
+        # --- Return Final Response ---
+        if response_payload.get("response_type") == "error":
+             return jsonify({"response": response_payload, "history_id": history_id}), 500
+        else:
+             return jsonify({"response": response_payload, "history_id": history_id}), 200
+
 
     except Exception as e:
         print(f"Unhandled error in /api/query: {e}")
-        return jsonify({
-            "response_type": "error",
-            "content": f"An unexpected server error occurred: {e}"
-        }), 500
+        error_response = {"response_type": "error", "content": f"An unexpected server error occurred: {e}"}
+        return jsonify({"response": error_response, "history_id": None}), 500
+
+
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    #retrieves prompt history, optionally filtered by dataset_name.
+    dataset_filter = request.args.get('dataset_name')
+    try:
+        db = get_db()
+        cursor = db.cursor()
+        if dataset_filter:
+            cursor.execute('''
+                SELECT id, prompt, dataset_name, timestamp, feedback FROM prompt_history
+                WHERE dataset_name = ? ORDER BY timestamp DESC
+            ''', (dataset_filter,))
+        else:
+             cursor.execute('''
+                SELECT id, prompt, dataset_name, timestamp, feedback FROM prompt_history
+                ORDER BY timestamp DESC LIMIT 100
+            ''') 
+
+        history_rows = cursor.fetchall()
+        history_list = [dict(row) for row in history_rows]
+        return jsonify({"history": history_list}), 200
+    except Exception as e:
+        print(f"Database Error fetching history: {e}")
+        return jsonify({"error": f"Failed to fetch history: {e}"}), 500
+
+
+@app.route('/api/feedback', methods=['POST'])
+def handle_feedback():
+    """Receives and stores user feedback for a specific prompt history entry."""
+    payload = request.get_json()
+    if not payload or 'history_id' not in payload or 'feedback' not in payload:
+        return jsonify({"error": "Missing required fields (history_id and feedback)"}), 400
+
+    history_id = payload['history_id']
+    feedback = payload['feedback']
+
+    try:
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute('''
+            UPDATE prompt_history SET feedback = ? WHERE id = ?
+        ''', (feedback, history_id))
+        db.commit()
+
+        if cursor.rowcount == 0:
+             return jsonify({"error": f"History ID {history_id} not found."}), 404
+        else:
+             return jsonify({"message": "Feedback submitted successfully."}), 200
+    except Exception as e:
+        print(f"Database Error submitting feedback: {e}")
+        return jsonify({"error": f"Failed to submit feedback: {e}"}), 500
+
 
 if __name__ == '__main__':
+    if not os.path.exists(DATABASE):
+        from database import init_db
+        init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
