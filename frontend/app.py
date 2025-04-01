@@ -32,12 +32,14 @@ if uploaded_files:
     new_files_processed = False
     for uploaded_file in uploaded_files:
         try:
+
             #create a unique preliminary name to check if already processed
             file_identifier = f"{uploaded_file.name}_{uploaded_file.size}"
 
             file_type = uploaded_file.name.split(".")[-1].lower()
 
             if file_type == "csv":
+
                 #check if this specific CSV file has already been processed
                 display_name = uploaded_file.name
                 if display_name not in st.session_state.display_names:
@@ -48,20 +50,20 @@ if uploaded_files:
                     st.toast(f"Processed CSV: {display_name}", icon="📄")
 
             elif file_type in ["xls", "xlsx"]:
+
                 excel_file = pd.ExcelFile(uploaded_file)
-                # Check if sheets from this specific Excel file have already been processed
+                #check if excel has already been processes
                 for sheet_name in excel_file.sheet_names:
                     display_name = f"{uploaded_file.name} - {sheet_name}"
                     if display_name not in st.session_state.display_names:
                         df = excel_file.parse(sheet_name)
-                        if df.shape[0] < 250:
-                             st.warning(f"Sheet '{sheet_name}' in file '{uploaded_file.name}' has less than 250 rows ({df.shape[0]}). Consider using a larger dataset.", icon="⚠️")
                         st.session_state.dataframes[display_name] = df
                         st.session_state.display_names.append(display_name)
+
                         new_files_processed = True
                         st.toast(f"Processed Excel Sheet: {display_name}", icon="📊")
             else:
-                #should not happen due to 'type' restriction, but good practice
+                #should not happen due to 'type' restriction, but keeping for good practice
                 st.error(f"Unsupported File Type: {uploaded_file.name}")
 
         except Exception as e:
@@ -76,21 +78,21 @@ if not st.session_state.display_names:
 else:
     col1, col2 = st.columns([0.4, 0.6]) # Create columns for layout
 
-    with col1: # Left column for selection and preview
+    with col1: #display N rows of dataset
         st.header("Explore Uploaded Data")
         selected_display_name = st.selectbox(
             "Select dataset to view:",
             options=st.session_state.display_names,
             key="dataset_selector",
-            index=st.session_state.display_names.index(st.session_state.get('last_selected_dataset', st.session_state.display_names[0])) # Remember last selection
+            index=st.session_state.display_names.index(st.session_state.get('last_selected_dataset', st.session_state.display_names[0])) #last selection
         )
-        st.session_state['last_selected_dataset'] = selected_display_name # Store selection
+        st.session_state['last_selected_dataset'] = selected_display_name #store selection
 
         if selected_display_name and selected_display_name in st.session_state.dataframes:
             selected_df = st.session_state.dataframes[selected_display_name]
             st.subheader(f"Preview: {selected_display_name}")
 
-            max_rows = len(selected_df)
+            max_rows = len(selected_df) #max rows of selected dataset
             default_rows = min(5, max_rows)
 
             n_rows = st.number_input(
@@ -99,7 +101,7 @@ else:
                 max_value=max_rows if max_rows > 0 else 1,
                 value=default_rows if max_rows > 0 else 1,
                 step=1,
-                key=f"n_rows_input_{selected_display_name}" # Unique key per dataframe
+                key=f"n_rows_input_{selected_display_name}"
             )
 
             if max_rows > 0:
@@ -110,24 +112,24 @@ else:
              st.warning("Please select a valid dataset from the list.")
 
 
-    with col2: # Right column for Querying
+    with col2: #querying
         st.header("Ask Questions")
         if selected_display_name and selected_display_name in st.session_state.dataframes:
             prompt = st.text_area(
                 f"Ask about '{selected_display_name}':",
                 key=f"prompt_input_{selected_display_name}",
                 height=100,
-                placeholder="e.g., 'Show me a bar chart of survivors by class' or 'What is the average age?'"
+                placeholder="e.g., 'Show me a bar chart of ... ' or 'What is the average ...?'"
             )
 
-            submit_button = st.button("✨ Get Answer", key=f"submit_{selected_display_name}")
+            submit_button = st.button("Generate", key=f"submit_{selected_display_name}")
 
             if submit_button and prompt:
-                # Ensure dataframe is not empty before sending
+                #ensure dataframe is not empty
                 if selected_df.empty:
                     st.error("Cannot query an empty dataset.")
                 else:
-                    with st.spinner("Thinking... 🤔"):
+                    with st.spinner("Thinking... "):
                         try:
                             # Convert dataframe to JSON records format
                             data_json = selected_df.to_json(orient='records')
@@ -136,11 +138,11 @@ else:
                             payload = {
                                 "prompt": prompt,
                                 "data_json": data_json,
-                                "dataset_name": selected_display_name # Send name for context/history
+                                "dataset_name": selected_display_name
                             }
 
                             # Send request to backend
-                            response = requests.post(QUERY_ENDPOINT, json=payload, timeout=120) # Increased timeout for potentially long AI calls
+                            response = requests.post(QUERY_ENDPOINT, json=payload, timeout=120)
                             response.raise_for_status()  
 
                             response_data = response.json()
@@ -151,13 +153,13 @@ else:
                             }
 
                         except requests.exceptions.Timeout:
-                            st.error(f"🚨 Request timed out after 120 seconds. The query might be too complex or the backend is slow.", icon="⏳")
+                            st.error(f"🚨 Request timed out after 120 seconds. The query might be too complex or the backend is slow.")
                             st.session_state.last_query["error"] = "Request Timed Out"
                         except requests.exceptions.RequestException as e:
-                            st.error(f"🚨 Error communicating with backend: {e}", icon="🔥")
+                            st.error(f"🚨 Error communicating with backend: {e}")
                             st.session_state.last_query["error"] = str(e)
                         except Exception as e:
-                            st.error(f"🚨 An unexpected error occurred: {e}", icon="💥")
+                            st.error(f"🚨 An unexpected error occurred: {e}")
                             st.session_state.last_query["error"] = str(e)
 
             # --- Display results from session state ---
