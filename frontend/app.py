@@ -1,4 +1,3 @@
-# frontend/app.py
 import streamlit as st
 import requests
 import pandas as pd
@@ -6,10 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import os
-
+from datetime import datetime
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
 QUERY_ENDPOINT = f"{BACKEND_URL}/api/query"
+HISTORY_ENDPOINT = f"{BACKEND_URL}/api/history"
+FEEDBACK_ENDPOINT = f"{BACKEND_URL}/api/feedback"
 
 st.set_page_config(layout="wide")
 st.title("🧿 CSV-ision 🧿")
@@ -20,17 +21,51 @@ if 'dataframes' not in st.session_state:
 if 'display_names' not in st.session_state:
     st.session_state.display_names = []
 if 'last_query' not in st.session_state:
-    st.session_state.last_query = {"prompt": "", "response": None, "error": None}
+    st.session_state.last_query = {"prompt": "", "response": None, "error": None, "history_id": None, "feedback_given": None}
 if 'last_selected_dataset' not in st.session_state:
     st.session_state.last_selected_dataset = None
+if 'prompt_history' not in st.session_state:
+    st.session_state.prompt_history = [] #to store fetched history {id, prompt, dataset_name, timestamp}
+if 'current_prompt_value' not in st.session_state:
+    st.session_state.current_prompt_value = "" #to manage text_area value
 
+
+def fetch_history(dataset_name=None):
+    """Fetches prompt history from the backend, optionally filtered by dataset."""
+    try:
+        params = {"dataset_name": dataset_name} if dataset_name else {}
+        response = requests.get(HISTORY_ENDPOINT, params=params, timeout=10)
+        response.raise_for_status()
+        st.session_state.prompt_history = response.json().get("history", [])
+    except requests.exceptions.RequestException as e:
+        st.error(f"🚨 Error fetching history: {e}")
+        st.session_state.prompt_history = [] #clear history on error
+
+def submit_feedback(history_id, feedback_value):
+    """Submits feedback for a given history ID."""
+    if history_id is None:
+        st.warning("Cannot submit feedback, query ID not found.")
+        return
+    try:
+        payload = {"history_id": history_id, "feedback": feedback_value}
+        response = requests.post(FEEDBACK_ENDPOINT, json=payload, timeout=10)
+        response.raise_for_status()
+        st.toast(f"Feedback '{feedback_value}' submitted!")
+        #update session state to reflect feedback was given for this query
+        if st.session_state.last_query.get("history_id") == history_id:
+            st.session_state.last_query["feedback_given"] = feedback_value
+    except requests.exceptions.RequestException as e:
+        st.error(f"🚨 Error submitting feedback: {e}")
+
+# --- File Uploader ---
 uploaded_files = st.file_uploader(
     "Upload your CSV or Excel files here",
-    type=["csv", "xls", "xlsx"], #security1: restrict file upload types
+    type=["csv", "xls", "xlsx"], #restrict file upload types
     accept_multiple_files=True, #allow multiple files
     help="Upload one or more files. Each sheet in an Excel file will be treated as a separate dataset."
 )
 
+# --- File Processing Logic ---
 if uploaded_files:
     new_files_processed = False
     #use a set for faster checking if a display name already exists
@@ -76,6 +111,7 @@ if uploaded_files:
         if not st.session_state.last_selected_dataset and st.session_state.display_names:
              st.session_state.last_selected_dataset = st.session_state.display_names[0]
         st.success("File processing complete!")
+        fetch_history(st.session_state.last_selected_dataset) # Fetch history for the newly selected dataset
         st.rerun() #rerun to update UI
 
 # --- Main App Layout ---
@@ -96,10 +132,17 @@ else:
             "Select dataset to view:",
             options=st.session_state.display_names,
             key="dataset_selector",
-            index=selectbox_index #use calculated index
+            index=selectbox_index, #use calculated index
+            on_change=lambda: fetch_history(st.session_state.dataset_selector) # Fetch history when dataset changes
         )
         #update last selected dataset whenever the selectbox changes
-        st.session_state.last_selected_dataset = selected_display_name
+        if st.session_state.last_selected_dataset != selected_display_name:
+             st.session_state.last_selected_dataset = selected_display_name
+             st.session_state.current_prompt_value = "" # Clear prompt on dataset change
+             st.session_state.last_query = {"prompt": "", "response": None, "error": None, "history_id": None, "feedback_given": None} # Clear last query
+             fetch_history(selected_display_name) # Fetch new history
+             st.rerun() #rerun to reflect changes immediately
+
 
         if selected_display_name and selected_display_name in st.session_state.dataframes:
             selected_df = st.session_state.dataframes[selected_display_name]
@@ -142,16 +185,34 @@ else:
         if selected_display_name and selected_display_name in st.session_state.dataframes:
             #use a unique key for the text area based on the selected dataset
             prompt_key = f"prompt_input_{selected_display_name}"
-            prompt = st.text_area(
+
+            st.session_state.current_prompt_value = st.text_area(
                 f"Ask about '{selected_display_name}':",
                 key=prompt_key,
                 height=100,
-                placeholder="e.g., 'Show me a bar chart of ... ' or 'What is the average ...?'"
+                placeholder="e.g., 'Show me a bar chart of ... ' or 'What is the average ...?'",
+                value=st.session_state.current_prompt_value #bind to session state
             )
+            prompt = st.session_state.current_prompt_value #get the current value
 
             #use a unique key for the submit button
             submit_key = f"submit_{selected_display_name}"
             submit_button = st.button("Generate", key=submit_key)
+
+            # --- Prompt History Expander ---
+            with st.expander("📜 Prompt History"):
+                if not st.session_state.prompt_history:
+                    st.caption("No history for this dataset yet.")
+                else:
+                    st.caption("Click a prompt to reuse it.")
+                    #display history items, most recent first
+                    for item in reversed(st.session_state.prompt_history):
+                        hist_prompt = item['prompt']
+                        hist_id = item['id']
+                        # Use a unique key for each history button
+                        if st.button(f"{hist_prompt[:80]}{'...' if len(hist_prompt) > 80 else ''}", key=f"hist_{hist_id}"):
+                            st.session_state.current_prompt_value = hist_prompt #update the text area value
+                            st.rerun() #rerun to update the text area display
 
             #check if the button for the *currently selected* dataset was pressed
             if submit_button and prompt:
@@ -182,23 +243,30 @@ else:
                             st.session_state.last_query = {
                                 "prompt": prompt,
                                 "dataset_name": selected_display_name,
-                                "response": response_data,
-                                "error": None
+                                "response": response_data.get("response"), 
+                                "history_id": response_data.get("history_id"),
+                                "error": None,
+                                "feedback_given": None 
                             }
+                            fetch_history(selected_display_name) #refresh history after successful query
+                            st.session_state.current_prompt_value = "" #clear input field after submission
                             st.rerun() #rerun to display the new result immediately
 
                         except requests.exceptions.Timeout:
                             st.error(f"🚨 Request timed out after 120 seconds. The query might be too complex or the backend is slow.")
-                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": "Request Timed Out"}
+                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": "Request Timed Out", "history_id": None, "feedback_given": None}
                         except requests.exceptions.RequestException as e:
                             st.error(f"🚨 Error communicating with backend: {e}")
-                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": str(e)}
+                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": str(e), "history_id": None, "feedback_given": None}
                         except Exception as e:
                             st.error(f"🚨 An unexpected error occurred: {e}")
-                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": str(e)}
+                            st.session_state.last_query = {"prompt": prompt, "dataset_name": selected_display_name, "response": None, "error": str(e), "history_id": None, "feedback_given": None}
 
             # --- Display results from session state ---
             if st.session_state.last_query.get("dataset_name") == selected_display_name:
+                current_history_id = st.session_state.last_query.get("history_id")
+                feedback_given = st.session_state.last_query.get("feedback_given")
+
                 if st.session_state.last_query.get("error"):
                     st.error(f"Previous query failed: {st.session_state.last_query['error']}")
                 elif st.session_state.last_query.get("response"):
@@ -209,6 +277,7 @@ else:
                     response_type = response_content.get("response_type")
                     content = response_content.get("content")
 
+                    #display content based on type
                     if response_type == "text":
                         st.markdown(content)
                     elif response_type == "plot":
@@ -230,5 +299,29 @@ else:
                         st.warning("Received an unknown response type from backend.")
                         st.json(response_content)
 
+                    # --- Feedback Section ---
+                    if current_history_id is not None:
+                        st.markdown("---")
+                        fb_col1, fb_col2, fb_col3 = st.columns([1, 1, 5])
+                        with fb_col1:
+                            st.button("👍 Useful", key=f"useful_{current_history_id}",
+                                      on_click=submit_feedback, args=(current_history_id, "useful"),
+                                      disabled=(feedback_given is not None), #disable if feedback already given
+                                      type="primary" if feedback_given == "useful" else "secondary")
+                        with fb_col2:
+                            st.button("👎 Not Useful", key=f"notuseful_{current_history_id}",
+                                      on_click=submit_feedback, args=(current_history_id, "not_useful"),
+                                      disabled=(feedback_given is not None), #disable if feedback already given
+                                      type="primary" if feedback_given == "not_useful" else "secondary")
+                        if feedback_given:
+                             with fb_col3:
+                                 st.caption(f"Feedback '{feedback_given}' recorded.")
+
         else:
             st.info("Select a dataset from the left to start asking questions.")
+
+# --- Initial History Fetch ---
+#fetch history for the initially selected dataset when the app first loads
+if 'prompt_history' not in st.session_state or not st.session_state.prompt_history:
+     if st.session_state.last_selected_dataset:
+         fetch_history(st.session_state.last_selected_dataset)
