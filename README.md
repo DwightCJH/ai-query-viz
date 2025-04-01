@@ -1,6 +1,7 @@
 # CSV-ision 🧿 (Local Development Setup)
 
 ## Note: requires older than Python 3.12
+## Also, admittedly it's quite buggy
 
 ## Setup Instructions
 
