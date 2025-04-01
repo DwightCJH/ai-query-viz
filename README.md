@@ -9,7 +9,6 @@ Also, admittedly it's quite buggy
 1.  **Clone the Repository:**
     ```bash
     git clone <https://github.com/DwightCJH/ai-query-viz>
-    cd <your-repository-directory>
     ```
 
     **Configure Backend Environment Variables:**
