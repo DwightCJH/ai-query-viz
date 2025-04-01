@@ -1,5 +1,6 @@
 # CSV-ision 🧿 (Local Development Setup)
 
+## Note: requires older than Python 3.12
 
 ## Setup Instructions
 
@@ -40,7 +41,7 @@ You will need **two separate terminal windows** open.
 
 1.  **Terminal 1: Run the Backend**
     *   Navigate to the `backend` directory.
-            ```bash
+        ```bash
         cd backend
         ```
     *   Start the Flask development server:
@@ -51,7 +52,7 @@ You will need **two separate terminal windows** open.
 
 2.  **Terminal 2: Run the Frontend**
     *   Navigate to the `frontend` directory.
-                ```bash
+        ```bash
         cd frontend
         ```
     *   Start the Streamlit application:
