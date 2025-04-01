@@ -1,7 +1,10 @@
+#frontend/app.py
 import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import io
 import json
 import openpyxl
 import os
@@ -43,7 +46,12 @@ if uploaded_files:
                 #check if this specific CSV file has already been processed
                 display_name = uploaded_file.name
                 if display_name not in st.session_state.display_names:
+                    # Use dtype=str for problematic columns to avoid PyArrow conversion issues
                     df = pd.read_csv(uploaded_file)
+                    # Convert object columns containing mixed types to string to prevent PyArrow errors
+                    for col in df.select_dtypes(include=['object']).columns:
+                        df[col] = df[col].astype(str)
+                        
                     st.session_state.dataframes[display_name] = df
                     st.session_state.display_names.append(display_name)
                     new_files_processed = True
@@ -56,7 +64,12 @@ if uploaded_files:
                 for sheet_name in excel_file.sheet_names:
                     display_name = f"{uploaded_file.name} - {sheet_name}"
                     if display_name not in st.session_state.display_names:
+                        # Read sheet and convert object columns to string
                         df = excel_file.parse(sheet_name)
+                        # Convert object columns containing mixed types to string to prevent PyArrow errors
+                        for col in df.select_dtypes(include=['object']).columns:
+                            df[col] = df[col].astype(str)
+                            
                         st.session_state.dataframes[display_name] = df
                         st.session_state.display_names.append(display_name)
 
@@ -132,7 +145,12 @@ else:
                     with st.spinner("Thinking... "):
                         try:
                             # Convert dataframe to JSON records format
-                            data_json = selected_df.to_json(orient='records')
+                            # Convert object columns to string first to avoid JSON serialization issues
+                            temp_df = selected_df.copy()
+                            for col in temp_df.select_dtypes(include=['object']).columns:
+                                temp_df[col] = temp_df[col].astype(str)
+                                
+                            data_json = temp_df.to_json(orient='records', date_format='iso')
 
                             # Prepare payload for backend
                             payload = {
@@ -179,12 +197,22 @@ else:
                         fig_dict = json.loads(content) 
                         fig = go.Figure(fig_dict) 
                         st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Fallback if the chart isn't rendering properly
+                        if 'data' in fig_dict and len(fig_dict['data']) > 0:
+                            data_available = True
+                            for trace in fig_dict['data']:
+                                if 'x' not in trace and 'y' not in trace:
+                                    data_available = False
+                                    
+                            if not data_available:
+                                st.error("The generated plot doesn't contain valid data coordinates.")
                     except json.JSONDecodeError:
                          st.error("🚨 Received plot data is not valid JSON.")
-                         st.text(content) 
+                         st.text(content[:500] + "..." if len(content) > 500 else content)
                     except Exception as e:
                         st.error(f"🚨 Error displaying plot: {e}")
-                        st.text(content) 
+                        st.text(content[:500] + "..." if len(content) > 500 else content)
                 elif response_type == "error":
                     st.error(f"Backend Error: {content}")
                 else:
