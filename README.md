@@ -8,7 +8,7 @@ Also, admittedly it's quite buggy
 
 1.  **Clone the Repository:**
     ```bash
-    git clone <your-repository-url>
+    git clone <https://github.com/DwightCJH/ai-query-viz>
     cd <your-repository-directory>
     ```
 
