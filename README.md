@@ -1,4 +1,5 @@
 # CSV-ision 🧿 (Local Development Setup)
+[Solution Architecture.pdf](https://github.com/user-attachments/files/19555378/Solution.Architecture.pdf)
 
 Note: requires older than Python 3.12
 
