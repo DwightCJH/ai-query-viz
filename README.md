@@ -3,8 +3,6 @@
 
 Note: requires older than Python 3.12
 
-Also, admittedly it's quite buggy
-
 Video demo: https://youtu.be/2qycOb8F9y4
 
 ## Setup Instructions
